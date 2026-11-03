@@ -16,6 +16,7 @@ so the same command continues a stopped run.
 """
 
 import argparse
+from collections import Counter
 from pathlib import Path
 
 from hw2.loop import Archive, best, fill_workspace, import_error, run_claude_code, task_names_in, unchanged
@@ -26,21 +27,25 @@ PROMPT = Path(__file__).parent / "proposer_prompt.md"
 def select_parent(archive: Archive) -> dict:
     """1. Pick the harness that this round builds on. archive.all() has every harness's meta.json.
 
-    Starter: the harness with the best search score (greedy hill climbing).
-    TODO: e.g. sample from the whole archive, favoring high scores and harnesses with few children (DGM), build only on
-    children that beat their parent by more than the noise (RRSI), or let the proposer choose (Meta-Harness).
-    m["scores"]["tasks"][task]["attempts"] has the reward of every attempt."""
-    return best(archive)
+    Explore near-tied harnesses: among candidates within one passed attempt of the top
+    search score, prefer the one with the fewest children. Break remaining ties by score."""
+    candidates = [m for m in archive.all() if m["valid"] and m.get("scores")]
+    top_score = max(m["scores"]["accuracy"] for m in candidates)
+    n_attempts = sum(len(t["attempts"]) for t in candidates[0]["scores"]["tasks"].values())
+    margin = 1 / n_attempts
+    near_best = [m for m in candidates if top_score - m["scores"]["accuracy"] <= margin + 1e-4]
+    children = Counter(m.get("parent") for m in archive.all())
+    return min(near_best, key=lambda m: (children[m["id"]], -m["scores"]["accuracy"], m["id"]))
 
 
 def propose(parent: dict, archive: Archive, ws: Path) -> float:
     """2. Write a child harness to ws/harness (and a ws/proposal.md). Returns what the proposer cost (USD).
 
-    Starter: Claude Code with Kimi K3 edits a copy of the parent's harness, following proposer_prompt.md. It can
-    read every earlier harness's code, proposal, scores and traces, but not the tests' output.
+    Claude Code with Kimi K3 edits a copy of the parent's harness, following proposer_prompt.md. It can
+    read every earlier harness's code, proposal, scores, traces, and search-task test output.
     TODO: what the proposer sees (e.g. with_tests_output=True), its instructions, several proposals per round,
     or another agent or model instead of Claude Code."""
-    fill_workspace(ws, archive, parent, PROMPT)
+    fill_workspace(ws, archive, parent, PROMPT, with_tests_output=True)
     return run_claude_code(ws, log=archive.dir / ws.name / "proposer" / "claude.jsonl")  # ws.name is the child's id
 
 
